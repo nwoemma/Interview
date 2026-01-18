@@ -1,9 +1,17 @@
-import random 
-
-def generate_username(first_name, last_name):
+import random
+import string
+from django.core.mail import send_mail
+from django.conf import settings
+from .models import User
+from django.utils import timezone
+from datetime import timedelta
+def generate_username(email):
     """
-    Generate a random username based on the user's first and last name.
+    Generate a unique username from email
     """
-    random_number = random.randint(100, 999)
-    username = f"{first_name + last_name}.".lower() + str(random_number)
-    return username
+    base_username = email.split('@')[0]
+    username = base_username
+    while True:
+        if not User.objects.filter(username=username).exists():
+            return username
+        username = f"{base_username}{random.randint(100, 999)}"

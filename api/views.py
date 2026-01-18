@@ -1,271 +1,150 @@
-from django.shortcuts import render
-from django.contrib.auth import authenticate
-from django.contrib import messages
-from rest_framework.response import Response
-from accounts.utility import generate_username
-from .serializers import UserSerializer, ChatHistorySerializer
-from accounts.models import User
-from rest_framework.authtoken.models import Token
 from rest_framework import status
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view
-from django.contrib.auth.hashers import make_password
-import json
-import os
-from datetime import datetime
-import pickle
-import random
-from chats.models import ChatHistory, ChatFeedback
-# Create your views here.
-MODEL_PATH =  os.path.join("ml_workings", "intents.pkl")
-VECTORIZER_PATH = os.path.join("ml_workings", "vectorizer.pkl")
-ENCODER = os.path.join("ml_workings", "label_encoder.pkl")
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from django.contrib.auth import authenticate, login  # Django authentication functions
+from rest_framework.authtoken.models import Token  # Token authentication
+from accounts.models import User  # Custom User model
+from django.core.exceptions import ValidationError
+from .serializers import UserSerializer  # Serializer for user data
+from django.core.validators import validate_email  # Email validation
+from accounts.utility import generate_username
+import logging  # For error logging
 
-with open (MODEL_PATH, 'rb') as f:
-    model = pickle.load(f)
-with open("ml_workings/intents.json", "r") as w:
-    intents_data = json.load(w)
-with open(VECTORIZER_PATH, 'rb') as d:
-    vectorizer = pickle.load(d)
-with open(ENCODER, 'rb') as e:
-    encoder = pickle.load(e)
+# Get logger instance for this module
+logger = logging.getLogger(__name__)
 
-def generate_chat_title(user_input):
-    return user_input[:50] + "..." if len(user_input) > 50 else user_input
+
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def signup(request):
-    print("🔍 RAW REQUEST DATA:", request.data)
-    print("📦 DATABASE_URL:", os.environ.get("DATABASE_URL"))
-    full_name = request.data.get('full_name', '').strip()
-    if not full_name:
-        print("❌ Full name is missing")
-        return Response({'messages': 'Full name is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Split full_name into first and last
-    names = full_name.split(' ', 1) if ' ' in full_name else (full_name, '')
-    first_name = names[0]
-    last_name = names[1] if len(names) > 1 else ''
-    print("✅ First Name:", first_name)
-    print("✅ Last Name:", last_name)
-
-    # Prepare user data
-    user_data = {
-        'username': generate_username(first_name, last_name),
+    data = {
+        'firstname': request.data.get('firstname'),
+        'lastname': request.data.get('lastname'),
         'email': request.data.get('email'),
-        'first_name': first_name,
-        'last_name': last_name,
-        'phone_num': request.data.get('phone_num'),
-        'role': request.data.get('role'),
-        'profile_pic': request.FILES.get('profile_pic'),
+        'password': request.data.get('password'),
+        'password2': request.data.get('password2'),
     }
 
-    print("📦 User data prepared for serializer:", user_data)
+    if data['password'] != data['password2']:
+        return Response({'error': 'Passwords do not match'}, status=400)
 
-    user = UserSerializer(data=user_data)
+    if User.objects.filter(email=data['email']).exists():
+        return Response({'error': 'Email already exists'}, status=400)
 
-    if user.is_valid():
-        print("✅ Serializer is valid")
-        try:
-            user = user.save()
-            print("✅ User saved to DB:", user)
-            user.set_password(request.data.get('password'))
-            user.save()
-            token = Token.objects.create(user=user)
-            print("🔑 Token created:", token.key)
+    serializer = UserSerializer(data=data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=400)
 
-            json = UserSerializer(user).data
-            json['token'] = token.key
+    user = serializer.save()
+    user.username = generate_username(data['email'])
+    user.set_password(data['password'])
+    user.is_active = True
+    user.save()
 
-            context = {
-                'email': json['email'],
-                'username': json['username'],
-                'first_name': json['first_name'],
-                'last_name': json['last_name'],
-                'phone_num': json['phone_num'],
-                'token': json['token']
-            }
+    token = Token.objects.create(user=user)
 
-            messages = "Account created successfully, please check your email for verification"
-            print("🎉 Signup successful")
-            return Response({'messages': messages, 'token': token.key}, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            print("❌ ERROR SAVING USER:", str(e))
-            return Response({'messages': 'Registration failed, internal error occurred'}, status=500)
-
-    else:
-        print("❌ Serializer errors:", user.errors)
-        return Response({
-            'messages': "Registration failed, please try again",
-            'errors': user.errors
-        }, status=status.HTTP_400_BAD_REQUEST)
-@api_view(['POST'])
-def activate_user(request):
-    email = request.data.get('email')
-    if not email:
-        return Response({'message': 'Email is required'}, status=400)
-    
-    try:
-        user = User.objects.get(email=email)
-        user.is_active = True
-        user.status = '1'
-        user.save()
-        return Response({'message': f"{email} is now active"}, status=200)
-    except User.DoesNotExist:
-        return Response({'message': 'User not found'}, status=404)
-
-@api_view(['POST'])
-def login_user(request):
-    print("RAW LOGIN DATA:", request.data)
-    email = request.data.get('email','').strip()
-    password = request.data.get('password', '').strip()
-    
-    if not email or not password:
-        print("📧 EMAIL VALUE:", repr(request.data.get('email')))
-        print("🔑 PASSWORD VALUE:", repr(request.data.get('password')))
-        return Response({'messages': 'Email and password are required'}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        user_email = User.objects.get(email=email)
-        if not user_email.password:
-            return Response({'messages': 'Password not set for this account'}, status=status.HTTP_400_BAD_REQUEST)
-    except User.DoesNotExist:
-        return Response({'messages': 'User does not exist'}, status=status.HTTP_404_NOT_FOUND)
-    user = authenticate(request, email=email, password=password)
-    if user:
-        if user.is_active:
-            if user.status == 'del':
-                return Response({'messages': 'Your account has been deleted'}, status=status.HTTP_403_FORBIDDEN)
-            if user.status == '0':
-                return Response({'messages': 'Your account is inactive'}, status=status.HTTP_403_FORBIDDEN)
-            if user.status == '2':
-                return Response({'messages': 'Your account is unverified'}, status=status.HTTP_403_FORBIDDEN)
-            token, created = Token.objects.get_or_create(user=user)
-            json = UserSerializer(user).data
-            json['token'] = token.key
-            context = {
-                'email': json['email'],
-                'username': json['username'],
-                'first_name': json['first_name'],
-                'last_name': json['last_name'],
-                'phone_num': json['phone_num'],
-            }           
-            return Response({'messages': 'Login successful', 'user': context}, status=status.HTTP_200_OK)
-        else:
-            return Response({'messages': 'Your account is inactive'}, status=status.HTTP_403_FORBIDDEN)
-    else:
-        return Response({'messages': 'Invalid email or password'}, status=status.HTTP_401_UNAUTHORIZED)
-@api_view(['POST'])    
-def logout_user(request):
-    user = request.user
-    if user.is_active:
-        Token.objects.filter(user=user).delete()
-        return Response({'messages': 'Logout successful'}, status=status.HTTP_200_OK)
-    else:
-        return Response({'messages': 'You are not logged in'}, status=status.HTTP_401_UNAUTHORIZED)                                                                                             
-@api_view(["POST"])
-@csrf_exempt
-def ai_chat_response(request):
-    try:
-        user_input = request.data.get('messages', '')
-    except Exception as e:
-        print("UNPICKLE ERROR:", str(e))
-        return Response({"error": str(e)}, status=500)
-
-    if not user_input:
-        return Response({"error": "No input was provided"}, status=400)
-
-    try:
-        x_input = vectorizer.transform([user_input])
-        prediction_index = model.predict(x_input)[0]
-        print(f"PREDICTION:{prediction_index}")
-
-        predicted_label = encoder.inverse_transform([prediction_index])[0]
-
-        response_text = "I'm not sure how to respond to that."
-        for intent in intents_data["intents"]:
-            if intent["tag"] == predicted_label:
-                response_text = random.choice(intent["responses"])
-                break
-        ChatHistory.objects.create(
-        user = request.user if request.user.is_authenticated else None,
-        title=generate_chat_title(user_input),
-        user_input=user_input,
-        ai_response=response_text,
-        intent=predicted_label
-    )
-    except Exception as e:
-        print("PREDICTION ERROR:", str(e))
-        return Response({"error": str(e)}, status=500)
-    
     return Response({
-        "user_input": user_input,
-        "intent": predicted_label,
-        "response": response_text,
-        "timestamp": datetime.utcnow().isoformat() + "Z"
-    }, status=200)
+        'token': token.key,
+        'user': serializer.data
+    }, status=201)
+
 @api_view(['POST'])
-def ai_chat_feedback(request):
-    chat_id = request.POST.get('chat_id')
-    is_helpful = request.POST.get('is_helpful') 
-    comment = request.POST.get('comment', '')
-
-    try:
-        chat = ChatHistory.objects.get(id=chat_id)
-        feedback = ChatFeedback.objects.create(
-            chat=chat,
-            is_helpful=is_helpful,
-            comment=comment
+@permission_classes([AllowAny])
+def signin(request):
+    """
+    User login endpoint
+    Authenticates user and returns authentication token
+    """
+    # Extract credentials from request
+    username = request.data.get("username")  # Can be username or email
+    password = request.data.get("password")  # Plain text password
+    
+    # STEP 1: Validate required fields
+    if not username or not password:
+        return Response(
+            {"error": "Username and password are required"},
+            status=status.HTTP_400_BAD_REQUEST
         )
-        serializer = ChatHistorySerializer(chat)
-        chat.title = generate_chat_title(chat.user_input)
-        chat.save()
-        return Response(serializer.data,{'message': 'Feedback submitted successfully'}, status=status.HTTP_201_CREATED)
-    except ChatHistory.DoesNotExist:
-        return Response({'error': 'Chat not found'}, status=status.HTTP_404_NOT_FOUND)
-@api_view(['GET'])
-def get_chat_history(request):
-    if not request.user.is_authenticated:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-    user_id = request.query_params.get("user_id")
-    if not user_id:
-        return Response({"error": "user_id is required"}, status=400)
-    chat_history = ChatHistory.objects.filter(user=user_id).order_by('-timestamp')
-    data = [{
-        "user_input": chat.user_input,
-        "ai_response": chat.ai_response,
-        "intent": chat.intent,
-        "timestamp": chat.timestamp
-    } for chat in chat_history]
+    
+    try:
+        try:
+            user_obj = User.objects.get(username=username)
+            username = user_obj.username
+        except User.DoesNotExist:
+            pass
 
-    return Response(data, status=status.HTTP_200_OK)
-@api_view(['GET'])
-def get_chat_session(request):
-    user_id = request.query_params.get("user_id")
-#     if not request.user.is_authenticated:
-#         return Response({
-#             "error": "Authentication required"
-#         }, status=status.HTTP_401_UNAUTHORIZED)
-    session_data = ChatHistory.objects.filter(user=user_id).order_by('-timestamp').values('id', 'title','user_input', 'timestamp')
-    return Response(session_data, status=status.HTTP_200_OK)
-@api_view(["GET"])
-def user_profile(request):
-    if not request.user.is_active:
-        return Response({"error": "User is not active"}, status=status.HTTP_403_FORBIDDEN)  
-    user = request.user
-    user_data = UserSerializer(user).data
-    return Response(user_data, status=status.HTTP_200_OK)   
+        # STEP 2: Authenticate user using Django's authenticate
+        user = authenticate(request, username=username, password=password)
+        
+        # STEP 3: Check if authentication failed
+        if not user:
+            return Response(
+                {"error": "Invalid credentials"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        # STEP 4: Check account status (if custom User model has this field)
+        if hasattr(user, 'account_status'):
+            if user.account_status == "Inactive":
+                return Response(
+                    {'error': "Your account has not been activated"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            elif user.account_status == "Suspended":
+                return Response(
+                    {'error': "Your account has been blocked or suspended"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            elif user.account_status == "Unverified":
+                return Response(
+                    {"error": "Your account is not verified"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+        
+        # STEP 5: Check if user account is active in Django
+        if not user.is_active:
+            return Response(
+                {'error': "There is a problem with your account. Please contact us for details"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # STEP 6: Log the user in (sets session data)
+        login(request, user)
+        
+        # STEP 7: Get or create authentication token
+        token, created = Token.objects.get_or_create(user=user)
+        
+        # STEP 8: Return success response with token and user info
+        user_data = UserSerializer(user)
+        
+        return Response({
+            "token": token.key,
+            "user": user_data.data
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Login error for {username}: {str(e)}")
+        return Response(
+            {'error': 'An error occurred during login'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
-@api_view(["PUT"])
-def update_user_profile(request):
-    if not request.user.is_authenticated:
-        return Response({"error": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
-    
+
+@api_view(['GET'])  # Only accept GET requests
+@permission_classes([IsAuthenticated])  # Requires authentication
+def profile(request):
+    """
+    Get user profile information
+    Returns basic profile data for authenticated users
+    """
+    # Get the authenticated user from request
     user = request.user
-    serializer = UserSerializer(user, data=request.data, partial=True)
     
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_200_OK)
-    
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+    # Return user profile data
+    return Response({
+        'id': user.id,  # User ID
+        'email': user.email,  # Email address
+        'name': f"{user.first_name} {user.last_name}".strip()  # Full name
+        # .strip() removes extra whitespace if names are empty
+    })

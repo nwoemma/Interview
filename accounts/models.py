@@ -1,69 +1,35 @@
 from django.db import models
-from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.contrib.auth.models import AbstractUser
 # Create your models here.
-class UserManger(BaseUserManager):
-    def create_user(self, username, email=None, password=None):
-        """
-        Create a superuser with the given username, email, and password.
-        """
-        user = self.model(username=username, email=email)
-        user.set_password(password)
-        user.is_superuser = True
-        user.is_staff = True
-        user.save(using=self._db)
-        return user
-    def create_superuser(self, username, email=None, password=None):
-        extra_fields = {
-            "is_staff":True,
-            "is_superuser":True,
-        }
-        extra_fields.setdefault(["is_staff", "is_super_user"], True)
-        return self.create_user(username, email, password, **extra_fields)
-
 class User(AbstractUser):
-    STATUS = (
-        ('del', 'deleted'),
-        ('0','inactive'),
-        ('1', 'active'),
-        ('2', 'unverified')
-    )
-    ROLE = (
-        ('Worker','Worker'),
-        ('Customer','Customer'),
-        ("Admin",'Admin'),
-    )
-    SEX_CHOICES = (
-        ('male','Male'),
-        ('female', 'Female')
-    )
-    first_name = models.CharField(max_length=40, blank=True, null=True)
-    last_name = models.CharField(max_length=40, blank=True, null=True)
-    email = models.EmailField(unique=True, blank=True, null=True)
-    phone_num= models.CharField(max_length=15, blank=True, null=True)
-    role = models.CharField(max_length=13, choices=ROLE,null=True, blank=True)
-    profile_pic= models.ImageField(upload_to='profile_pics/', blank=True, null=True)
-    password = models.CharField(max_length=128, blank=True, null=True)
-    password2 = models.CharField(max_length=128, blank=True, null=True)
-    is_admin = models.BooleanField(default=False)
+    STATUS =[
+        ('active', 'Active'),
+        ('inactive', 'Inactive'),
+        ('suspended', 'Suspended'),
+        ('deactivated', 'Deactivated'),
+    ]
+    firstname = models.CharField(null=True, blank=True, max_length=30)
+    lastname = models.CharField(null=True, blank=True,max_length=30)
+    email = models.EmailField(unique=True,null=True, blank=True,)
+    username = models.CharField(null=True, blank=True,max_length=30, unique=True)
+    phone = models.CharField(max_length=15, blank=True, null=True)
+    password = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    account_status = models.CharField(max_length=20, default='active', choices=STATUS)
     is_active = models.BooleanField(default=True)
-    status = models.CharField(max_length=10, choices=STATUS, default='0')
-    date_joined = models.DateTimeField(auto_now_add=True)
-    sex = models.CharField(max_length=10, choices=SEX_CHOICES, blank=True, null=True)
+    
+    USERNAME_FIELD = 'username'
+    REQUIRED_FIELDS = ['email', 'first_name', 'last_name']
+    def __str__(self):
+        return self.username
+    
+class Profile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    bio = models.TextField(blank=True, null=True)
+    profile_pic = models.ImageField(upload_to='profile_pics/', blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
-    objects = UserManger()
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['phone_num']
-    
-    def get_full_name(self):
-        full_name = f"{self.first_name + self.last_name}" 
-        return full_name.capitalize() 
-    
-class OTP(models.Model):
-    otp = models.CharField(max_length=9)
-    phone = models.CharField(max_length=15)
-    date_created = models.DateTimeField(auto_now_add=True)
-    expires = models.DateTimeField("Expires")
-    
-    class Meta:
-        db_table = 'otp_db_table'
-        
+    def __str__(self):
+        return f"{self.user.username}'s Profile"

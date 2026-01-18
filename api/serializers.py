@@ -1,13 +1,13 @@
 from rest_framework import serializers
 from accounts.models import User
-from chats.models import ChatHistory, ChatFeedback, ModelVersion
 from django.contrib.auth import get_user_model
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = get_user_model()
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_num', 'role', 'profile_pic', 'is_active','status', )
-
-class ChatHistorySerializer(serializers.ModelSerializer):
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone', 'is_active','account_status', 'created_at', 'updated_at', )
+    
+class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ChatHistory
-        fields = ('id', 'user', 'user_input', 'ai_response', 'intent', 'timestamp')
+        model = User.profile.related.model
+        fields = ('bio', 'profile_pic', 'created_at', 'updated_at', )
